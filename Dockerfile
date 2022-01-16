@@ -21,7 +21,7 @@ LABEL maintainer="Andrea Spacca <andrea.spacca@gmail.com>"
 
 COPY --from=build  /go/bin/transfersh /go/bin/transfersh
 COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
-COPY --fromt=build /tmp /tmp
+COPY --from=build /tmp /tmp
 
 ENTRYPOINT ["/go/bin/transfersh", "--listener", ":8080"]
 

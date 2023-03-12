@@ -25,39 +25,35 @@ THE SOFTWARE.
 package server
 
 import (
-	crypto_rand "crypto/rand"
+	"context"
+	cryptoRand "crypto/rand"
+	"crypto/tls"
 	"encoding/binary"
 	"errors"
-	gorillaHandlers "github.com/gorilla/handlers"
 	"log"
 	"math/rand"
 	"mime"
 	"net/http"
+	_ "net/http/pprof"
 	"net/url"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
-	context "golang.org/x/net/context"
-
 	"github.com/PuerkitoBio/ghost/handlers"
 	"github.com/VojtechVitek/ratelimit"
 	"github.com/VojtechVitek/ratelimit/memory"
+	gorillaHandlers "github.com/gorilla/handlers"
 	"github.com/gorilla/mux"
-
-	// import pprof
-	_ "net/http/pprof"
-
-	"crypto/tls"
+	"golang.org/x/crypto/acme/autocert"
 
 	web "github.com/dutchcoders/transfer.sh-web"
+	"github.com/dutchcoders/transfer.sh/server/storage"
 	assetfs "github.com/elazarl/go-bindata-assetfs"
-
-	autocert "golang.org/x/crypto/acme/autocert"
-	"path/filepath"
 )
 
 // parse request with maximum memory of _24Kilobits
@@ -248,7 +244,7 @@ func EnableProfiler() OptionFn {
 }
 
 // UseStorage set storage to use
-func UseStorage(s Storage) OptionFn {
+func UseStorage(s storage.Storage) OptionFn {
 	return func(srvr *Server) {
 		srvr.storage = s
 	}
@@ -337,7 +333,7 @@ type Server struct {
 	purgeDays     time.Duration
 	purgeInterval time.Duration
 
-	storage Storage
+	storage storage.Storage
 
 	forceHTTPS bool
 
@@ -385,7 +381,7 @@ func New(options ...OptionFn) (*Server, error) {
 
 func init() {
 	var seedBytes [8]byte
-	if _, err := crypto_rand.Read(seedBytes[:]); err != nil {
+	if _, err := cryptoRand.Read(seedBytes[:]); err != nil {
 		panic("cannot obtain cryptographically secure seed")
 	}
 	rand.Seed(int64(binary.LittleEndian.Uint64(seedBytes[:])))
@@ -470,8 +466,6 @@ func (s *Server) Run() {
 	r.HandleFunc("/{action:(?:download|get|inline)}/{token}/{filename}", s.headHandler).Methods("HEAD")
 
 	r.HandleFunc("/{token}/{filename}", s.previewHandler).MatcherFunc(func(r *http.Request, rm *mux.RouteMatch) (match bool) {
-		match = false
-
 		// The file will show a preview page when opening the link in browser directly or
 		// from external link. If the referer url path and current path are the same it will be
 		// downloaded.
@@ -479,7 +473,7 @@ func (s *Server) Run() {
 			return false
 		}
 
-		match = (r.Referer() == "")
+		match = r.Referer() == ""
 
 		u, err := url.Parse(r.Referer())
 		if err != nil {
@@ -541,32 +535,34 @@ func (s *Server) Run() {
 	)
 
 	if !s.TLSListenerOnly {
-		srvr := &http.Server{
-			Addr:    s.ListenerString,
-			Handler: h,
-		}
-
 		listening = true
-		s.logger.Printf("listening on port: %v\n", s.ListenerString)
+		s.logger.Printf("starting to listen on: %v\n", s.ListenerString)
 
 		go func() {
-			_ = srvr.ListenAndServe()
+			srvr := &http.Server{
+				Addr:    s.ListenerString,
+				Handler: h,
+			}
+
+			if err := srvr.ListenAndServe(); err != nil {
+				s.logger.Fatal(err)
+			}
 		}()
 	}
 
 	if s.TLSListenerString != "" {
 		listening = true
-		s.logger.Printf("listening on port: %v\n", s.TLSListenerString)
+		s.logger.Printf("starting to listen for TLS on: %v\n", s.TLSListenerString)
 
 		go func() {
-			s := &http.Server{
+			srvr := &http.Server{
 				Addr:      s.TLSListenerString,
 				Handler:   h,
 				TLSConfig: s.tlsConfig,
 			}
 
-			if err := s.ListenAndServeTLS("", ""); err != nil {
-				panic(err)
+			if err := srvr.ListenAndServeTLS("", ""); err != nil {
+				s.logger.Fatal(err)
 			}
 		}()
 	}
